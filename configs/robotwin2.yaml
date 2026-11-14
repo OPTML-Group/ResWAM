@@ -1,0 +1,112 @@
+# Standard configuration for RoboTwin 2.0 training and official 50-task evaluation
+benchmark: robotwin2
+dataset_id: robotwin2
+
+data:
+  dataset_root: "${RESWAM_DATA_ROOT:-./data}/robotwin2"
+  prepared_dir: "${RESWAM_DATA_ROOT:-./data}/prepared/robotwin2"
+  dino_cache_root: "${RESWAM_CACHE_ROOT:-./cache}/dino/robotwin2"
+  use_dino_cache: false
+  hf_repo: "yuanty/robotwin2.0-fastwam"
+  hf_revision: "aac262c35d02cc71b2f6ef670bd65fd9f2bb2547"
+  source_episodes: 27500
+  cleaned_episodes: 26617
+  cleaned_frames: 4933470
+  fps: 50
+  action_dim: 14
+  state_dim: 14
+  raw_state_dim: 14
+  state_featurization: "identity"
+  state_dropout_prob: 0.0
+  action_space: "joint_absolute"
+  gripper_indices: [6, 13]
+  state_gripper_indices: [6, 13]
+  encode_clamp_sigma: 12.0
+  views:
+    - head
+    - left_wrist
+    - right_wrist
+  world_views:
+    - head
+  view_keys:
+    head: "observation.images.cam_high"
+    left_wrist: "observation.images.cam_left_wrist"
+    right_wrist: "observation.images.cam_right_wrist"
+  horizon: 32
+  end_padding: "repeat_last_frame_supervised"
+  lila_cleaning:
+    enabled: true
+    static_threshold: 1.0e-6
+    static_margin: 1
+    outlier_joint_limit_rad: 3.141592653589793
+
+model:
+  rynnbrain:
+    model_id: "${RESWAM_RYNNBRAIN_PATH:-Alibaba-DAMO-Academy/RynnBrain1.1-2B}"
+    revision: "36069aa841fc58f500d307316cbfdf379777ce8a"
+    text_layers: 16
+    vision_layers: 24
+    hidden_size: 2048
+    prompt_style: "multi_camera"
+  dino:
+    model_id: "${RESWAM_DINOV3_PATH:-facebook/dinov3-vitb16-pretrain-lvd1689m}"
+    revision: "5931719e67bbdb9737e363e781fb0c67687896bc"
+    selected_blocks: [8, 10]
+    image_size: 256
+    spatial_pooling: 2
+    tokens_per_view: 64
+    hidden_dim: 768
+    frozen: true
+  expert:
+    hidden_dim: 1024
+    heads: 16
+    ffn_dim: 4096
+    depth: 12
+    variant: "bidirectional"
+    layout: "robotwin"
+    use_state_null_tokens: false
+  flow:
+    world_loss_weight: 0.1
+    action_tau_shift: 1.0
+    world_tau_shift: 5.0
+    solver_steps: 10
+
+training:
+  output_dir: "${RESWAM_OUTPUT_DIR:-./outputs}/robotwin2"
+  seed: 20260907
+  global_batch_size: 256
+  per_gpu_batch: 32
+  grad_accum: 2
+  world_size: 4
+  steps: 100000
+  warmup_steps: 1500
+  save_every: 2000
+  save_full: true
+  keep_resume_states: 5
+  num_workers: 8
+  clip_grad_norm: 1.0
+  optimizer:
+    vlm_peak_lr: 1.0e-5
+    vlm_min_lr: 1.0e-6
+    expert_peak_lr: 1.0e-4
+    expert_min_lr: 1.0e-5
+    betas: [0.9, 0.95]
+    weight_decay: 1.0e-8
+
+evaluation:
+  robotwin_root: "${ROBOTWIN_ROOT:-./third_party/RoboTwin}"
+  num_tasks: 50
+  settings:
+    - clean
+    - randomized
+  trials_per_task: 100
+  total_episodes: 10000
+  prediction_horizon: 32
+  execute_horizon: 16
+  protocol: "p32e16"
+  bspline_smoothing:
+    enabled: true
+    degree: 3
+    num_ctrl_pts: 8
+  instruction_type: "unseen"
+  base_seed: 0

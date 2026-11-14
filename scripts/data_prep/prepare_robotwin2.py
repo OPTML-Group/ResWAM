@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""Prepare RoboTwin 2.0 LeRobot dataset, LiLa clean-index map, and normalization statistics for ResWAM.
+
+Supports:
+  - Optional download from Hugging Face (`yuanty/robotwin2.0-fastwam` @ `aac262c`)
+  - Exact LiLa-WAM stationary-frame cleaning (`detect_stationary_segments` + `compute_delete_mask`
+    with `THRESHOLD=1e-6`, `MARGIN=1`) and joint-outlier episode filtering (`is_outlier_episode`
+    excluding episodes with non-gripper joint angles outside `[-pi, pi]`), writing `clean_index.json`
+    so `LeRobotWindowDataset` indexes the exact kept frames per episode
+  - Computing 14-D z-score joint + affine [0, 1] -> [-1, 1] gripper statistics over all clean frames
+  - Writing dataset.json, clean_index.json, codec_statistics.json, and reswam.json.
+
+Usage:
+    python scripts/data_prep/prepare_robotwin2.py \
+        --dataset-root ./data/robotwin2 \
+        --output-dir ./data/prepared/robotwin2
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from reswam.data.cleaning import MARGIN, THRESHOLD, clean_episode, rule_identity  # noqa: E402
+from reswam.data.codec import STATISTICS_SCHEMA, describe  # noqa: E402
+from reswam.data.dino_cache import layout_sha256, sha256_file  # noqa: E402
+
+HF_REPO = "yuanty/robotwin2.0-fastwam"
+HF_REVISION = "aac262c35d02cc71b2f6ef670bd65fd9f2bb2547"
+GRIPPER_INDICES = [6, 13]
+
+
+def download_from_hf(target_dir: Path, revision: str = HF_REVISION) -> Path:
+    from huggingface_hub import snapshot_download
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[prepare_robotwin2] Downloading {HF_REPO}@{revision} into {target_dir}...")
+    snapshot_download(
+        repo_id=HF_REPO,
+        repo_type="dataset",
+        revision=revision,
+        local_dir=str(target_dir),
+    )
+    return target_dir
+
+
+def _read_parquet_columns(root: Path, columns: list[str]) -> dict[str, np.ndarray]:
+    files = sorted((root / "data").glob("chunk-*/file-*.parquet"))
+    if not files:
+        files = sorted((root / "data").glob("**/*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"No parquet files found under {root / 'data'}")
+    parts = [pq.read_table(f, columns=columns) for f in files]
+    idx = np.concatenate([p.column("index").to_numpy() for p in parts])
+    order = np.argsort(idx, kind="stable")
+    out: dict[str, np.ndarray] = {"index": idx[order]}
+    for col_name in columns:
+        if col_name == "index":
+            continue
+        rows = []
+        for p in parts:
+            col = p.column(col_name).combine_chunks()
+            if pa.types.is_fixed_size_list(col.type) or pa.types.is_list(col.type):
+                flat = col.flatten().to_numpy(zero_copy_only=False)
+                rows.append(flat.reshape(len(col), -1))
+            else:
+                rows.append(col.to_numpy(zero_copy_only=False))
+        out[col_name] = np.concatenate(rows)[order]
+    return out
+
+
+def _read_tasks(root: Path) -> dict[str, str]:
+    tasks_parquet = root / "meta/tasks.parquet"
+    tasks_jsonl = root / "meta/tasks.jsonl"
+    if tasks_parquet.is_file():
+        df = pq.read_table(tasks_parquet).to_pandas()
+        if "task" in df.columns:
+            return {str(int(r.task_index)): str(r.task) for r in df.itertuples()}
+        return {str(int(idx)): str(task) for task, idx in zip(df.index, df["task_index"])}
+    if tasks_jsonl.is_file():
+        rows = [json.loads(line) for line in tasks_jsonl.read_text().splitlines() if line.strip()]
+        return {str(int(r["task_index"])): str(r["task"]) for r in rows}
+    raise FileNotFoundError(f"Task metadata not found in {root / 'meta'}")
+
+
+def _read_episodes(root: Path) -> list[dict[str, Any]]:
+    ep_files = sorted((root / "meta/episodes").glob("chunk-*/file-*.parquet"))
+    if ep_files:
+        meta = []
+        for f in ep_files:
+            table = pq.read_table(f)
+            keep = [c for c in table.column_names if not c.startswith("stats/")]
+            meta.extend(table.select(keep).to_pylist())
+        return sorted(meta, key=lambda r: int(r["episode_index"]))
+    ep_jsonl = root / "meta/episodes.jsonl"
+    if ep_jsonl.is_file():
+        rows = [json.loads(line) for line in ep_jsonl.read_text().splitlines() if line.strip()]
+        return sorted(rows, key=lambda r: int(r["episode_index"]))
+    raise FileNotFoundError(f"Episode metadata not found in {root / 'meta'}")
+
+
+def prepare_robotwin2(
+    dataset_root: Path,
+    output_dir: Path,
+    *,
+    horizon: int = 32,
+    execute_before_replan: int = 16,
+    head_key: str = "observation.images.cam_high",
+    left_wrist_key: str = "observation.images.cam_left_wrist",
+    right_wrist_key: str = "observation.images.cam_right_wrist",
+    state_key: str = "observation.state",
+    action_key: str = "action",
+    lila_clean: bool = True,
+    download: bool = False,
+    force: bool = False,
+) -> Path:
+    dataset_root = dataset_root.expanduser().resolve()
+    output_dir = output_dir.expanduser().resolve()
+    reswam_json = output_dir / "reswam.json"
+    if reswam_json.is_file() and not force:
+        print(f"[prepare_robotwin2] {reswam_json} already exists (pass --force to rebuild)")
+        return reswam_json
+
+    if download and not (dataset_root / "meta/info.json").is_file():
+        download_from_hf(dataset_root)
+
+    info = json.loads((dataset_root / "meta/info.json").read_text())
+    columns = ["index", "episode_index", "frame_index", "task_index", state_key, action_key]
+    data = _read_parquet_columns(dataset_root, columns)
+    actions_all = np.asarray(data[action_key], dtype=np.float64).reshape(len(data["index"]), -1)
+    states_all = np.asarray(data[state_key], dtype=np.float64).reshape(len(data["index"]), -1)
+
+    if actions_all.shape[1] != 14 or states_all.shape[1] != 14:
+        raise RuntimeError(
+            f"RoboTwin 2.0 requires 14-D state and action, got state={states_all.shape}, action={actions_all.shape}"
+        )
+
+    episodes = _read_episodes(dataset_root)
+    tasks = _read_tasks(dataset_root)
+
+    source_rows: list[int] = []
+    running_offset = 0
+    for ep in episodes:
+        length = int(ep["length"])
+        if "dataset_from_index" in ep:
+            begin = int(np.searchsorted(data["index"], ep["dataset_from_index"]))
+        else:
+            begin = running_offset
+        running_offset = begin + length
+        source_rows.append(begin)
+
+    kept_episodes: list[dict[str, Any]] = []
+    clean_episode_records: list[dict[str, Any]] = []
+    kept_action_chunks: list[np.ndarray] = []
+    kept_state_chunks: list[np.ndarray] = []
+    all_kept_global_rows: list[np.ndarray] = []
+    clean_offset = 0
+    outlier_episodes = 0
+    short_episodes = 0
+    dropped_stationary_frames = 0
+
+    for ep, begin in zip(episodes, source_rows, strict=True):
+        ep_idx = int(ep["episode_index"])
+        length = int(ep["length"])
+        ep_act = actions_all[begin : begin + length]
+        ep_st = states_all[begin : begin + length]
+        if lila_clean:
+            cleaned = clean_episode(
+                ep_act,
+                threshold=THRESHOLD,
+                margin=MARGIN,
+                gripper_indices=GRIPPER_INDICES,
+                check_outliers=True,
+            )
+            if cleaned.outlier_episode:
+                outlier_episodes += 1
+                continue
+            keep_local = cleaned.keep_indices.astype(np.int64)
+            kept_len = int(len(keep_local))
+            if kept_len == 0:
+                # Only possible for an empty source episode; end-padded windows cover every
+                # other length, so (as in the official pipeline) no minimum length is imposed.
+                short_episodes += 1
+                continue
+            dropped_stationary_frames += length - kept_len
+            kept_global_rows = (begin + keep_local).astype(np.int64)
+            kept_action_chunks.append(ep_act[keep_local])
+            kept_state_chunks.append(ep_st[keep_local])
+            all_kept_global_rows.append(kept_global_rows)
+            clean_episode_records.append(
+                {
+                    "episode_index": ep_idx,
+                    "source_begin_row": begin,
+                    "source_length": length,
+                    "clean_begin_row": clean_offset,
+                    "clean_length": kept_len,
+                    "dropped_stationary_frames": length - kept_len,
+                    "kept_frame_indices": keep_local.tolist(),
+                    "kept_rows": kept_global_rows.tolist(),
+                }
+            )
+            kept_episodes.append(
+                {
+                    "episode_index": ep_idx,
+                    "length": kept_len,
+                    "source_length": length,
+                }
+            )
+            clean_offset += kept_len
+        else:
+            kept_action_chunks.append(ep_act)
+            kept_state_chunks.append(ep_st)
+            kept_episodes.append({"episode_index": ep_idx, "length": length})
+
+    stats_actions = np.concatenate(kept_action_chunks, axis=0)
+    stats_states = np.concatenate(kept_state_chunks, axis=0)
+
+    stats = {
+        "schema_version": STATISTICS_SCHEMA,
+        "source": f"RoboTwin 2.0 ({len(stats_actions)} frames across {len(kept_episodes)} episodes, lila_clean={lila_clean})",
+        "gripper_indices": GRIPPER_INDICES,
+        "state_gripper_indices": GRIPPER_INDICES,
+        "gripper_mode": "affine",
+        "encode_clamp_sigma": 12.0,
+        "state_featurization": "identity",
+        "action": describe(stats_actions, GRIPPER_INDICES, fixed_gripper_range=(0.0, 1.0)),
+        "state": describe(stats_states, GRIPPER_INDICES, fixed_gripper_range=(0.0, 1.0)),
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stats_path = output_dir / "codec_statistics.json"
+    stats_path.write_text(json.dumps(stats, indent=2, sort_keys=True) + "\n")
+
+    clean_index_path: Path | None = None
+    clean_index_sha: str | None = None
+    if lila_clean:
+        flat_kept_rows = (
+            np.concatenate(all_kept_global_rows, axis=0)
+            if all_kept_global_rows
+            else np.empty(0, dtype=np.int64)
+        )
+        kept_rows_sha = hashlib.sha256(
+            np.ascontiguousarray(flat_kept_rows, dtype="<i8").tobytes()
+        ).hexdigest()
+        clean_index_payload = {
+            "schema_version": "reswam-clean-episode-index-v1",
+            "dataset_id": "robotwin2",
+            "source_root": str(dataset_root),
+            "source_total_episodes": len(episodes),
+            "source_total_frames": int(len(data["index"])),
+            "source_episode_layout_sha256": layout_sha256(episodes, source_rows),
+            "cleaning_rule": rule_identity(),
+            "outlier_episodes_removed": outlier_episodes,
+            "short_episodes_removed": short_episodes,
+            "dropped_stationary_frames": dropped_stationary_frames,
+            "clean_episodes": len(clean_episode_records),
+            "clean_frames": int(len(stats_actions)),
+            "kept_rows_int64_sha256": kept_rows_sha,
+            "episodes": clean_episode_records,
+        }
+        clean_index_path = output_dir / "clean_index.json"
+        clean_index_path.write_text(json.dumps(clean_index_payload, indent=1) + "\n")
+        clean_index_sha = sha256_file(clean_index_path)
+
+    lengths = [int(e["length"]) for e in kept_episodes]
+    contract = {
+        "schema": "reswam-dataset-contract-v1",
+        "dataset": str(dataset_root),
+        "dataset_id": "robotwin2",
+        "root": str(dataset_root),
+        "codebase_version": info.get("codebase_version", "v3.0"),
+        "fps": int(info.get("fps", 50)),
+        "state_key": state_key,
+        "action_key": action_key,
+        "state_dim": 14,
+        "action_dim": 14,
+        "action_space": "joint_absolute",
+        "gripper_indices": GRIPPER_INDICES,
+        "arms": 2,
+        "views": {
+            "base": head_key,
+            "left_wrist": left_wrist_key,
+            "right_wrist": right_wrist_key,
+        },
+        "world_views": ["head"],
+        "tasks": tasks,
+        "total_episodes": len(kept_episodes),
+        "total_frames": int(sum(lengths)),
+        "episodes": kept_episodes,
+    }
+    contract_path = output_dir / "dataset.json"
+    contract_path.write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n")
+
+    reswam_cfg = {
+        "schema": "reswam-dataset-config-v1",
+        "dataset": str(dataset_root),
+        "dataset_id": "robotwin2",
+        "root": str(dataset_root),
+        "contract": str(contract_path),
+        "fps": int(info.get("fps", 50)),
+        "action_dim": 14,
+        "state_dim": 14,
+        "horizon": int(horizon),
+        "execute_before_replan": int(execute_before_replan),
+        "views": ["head", "left_wrist", "right_wrist"],
+        "view_keys": {
+            "head": head_key,
+            "left_wrist": left_wrist_key,
+            "right_wrist": right_wrist_key,
+        },
+        "world_view": "head",
+        "world_views": ["head"],
+        "world_view_keys": {"head": head_key},
+        "action_space": "joint_absolute",
+        "end_padding": "repeat_last_frame_supervised",
+        "gripper_indices": GRIPPER_INDICES,
+        "state_gripper_indices": GRIPPER_INDICES,
+        "codec_statistics": str(stats_path),
+        "codec_statistics_sha256": hashlib.sha256(stats_path.read_bytes()).hexdigest(),
+        **({"clean_index": str(clean_index_path), "clean_index_sha256": clean_index_sha} if clean_index_path else {}),
+        "instructions": tasks,
+        "episode_indices": [int(e["episode_index"]) for e in kept_episodes],
+        "episodes": len(kept_episodes),
+        "frames": int(sum(lengths)),
+        "windows": int(sum(lengths)),
+        "stable_v2_codec_compatible": True,
+    }
+    reswam_json.write_text(json.dumps(reswam_cfg, indent=2, sort_keys=True) + "\n")
+    print(
+        json.dumps(
+            {
+                "event": "robotwin2_prepared",
+                "config": str(reswam_json),
+                "clean_index": str(clean_index_path) if clean_index_path else None,
+                "episodes": len(kept_episodes),
+                "frames": int(sum(lengths)),
+            }
+        )
+    )
+    return reswam_json
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Prepare RoboTwin 2.0 LeRobot dataset for ResWAM")
+    ap.add_argument("--dataset-root", type=Path, default=Path("./data/robotwin2"))
+    ap.add_argument("--output-dir", type=Path, default=Path("./data/prepared/robotwin2"))
+    ap.add_argument("--horizon", type=int, default=32)
+    ap.add_argument("--execute-before-replan", type=int, default=16)
+    ap.add_argument("--head-key", type=str, default="observation.images.cam_high")
+    ap.add_argument("--left-wrist-key", type=str, default="observation.images.cam_left_wrist")
+    ap.add_argument("--right-wrist-key", type=str, default="observation.images.cam_right_wrist")
+    ap.add_argument("--no-lila-clean", action="store_true", help="Disable stationary frame filtering")
+    ap.add_argument("--download", action="store_true", help="Download dataset from Hugging Face if absent")
+    ap.add_argument("--force", action="store_true")
+    args = ap.parse_args()
+    prepare_robotwin2(
+        args.dataset_root,
+        args.output_dir,
+        horizon=args.horizon,
+        execute_before_replan=args.execute_before_replan,
+        head_key=args.head_key,
+        left_wrist_key=args.left_wrist_key,
+        right_wrist_key=args.right_wrist_key,
+        lila_clean=not args.no_lila_clean,
+        download=args.download,
+        force=args.force,
+    )
+
+
+if __name__ == "__main__":
+    main()

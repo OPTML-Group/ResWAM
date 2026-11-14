@@ -1,0 +1,7 @@
+# Optional Gated-DeltaNet kernels used for the official ResWAM training runs
+# (RynnBrain-1.1 linear-attention layers; transformers picks them up automatically when both
+# packages import). Evaluation of the released checkpoints used transformers' torch fallback,
+# so install these only in the training environment.
+flash-linear-attention==0.4.2
+fla-core==0.4.2
+causal-conv1d==1.5.0.post8

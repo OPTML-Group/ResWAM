@@ -1,0 +1,155 @@
+# RoboDojo stage 1 (fresh, warmup 1500 + cosine to 200k) and official 42-task (54-config) evaluation.
+# Stage 2 (200k -> 400k at constant floor LR) is configs/robodojo_stage2.yaml; the released
+# checkpoint is OPTML-Group/ResWAM-RoboDojo (SR 9.40 / Score 13.41).
+benchmark: robodojo
+dataset_id: robodojo
+
+data:
+  dataset_root: "${RESWAM_DATA_ROOT:-./data}/robodojo"
+  prepared_dir: "${RESWAM_DATA_ROOT:-./data}/prepared/robodojo"
+  dino_cache_root: "${RESWAM_CACHE_ROOT:-./cache}/dino/robodojo"
+  use_dino_cache: false
+  hf_repo: "RoboDojo-Benchmark/RoboDojo"
+  hf_revision: "35efbc7dedfdbeeb6e95fb749bd885d73d483e41"
+  tasks: 35
+  episodes: 3500
+  frames: 1856102
+  fps: 25
+  action_dim: 14
+  state_dim: 14
+  raw_state_dim: 14
+  state_featurization: "identity"
+  state_dropout_prob: 0.0  # no proprioceptive state dropout (state mask is all ones)
+  action_space: "joint_absolute"
+  gripper_indices: [6, 13]
+  state_gripper_indices: [6, 13]
+  encode_clamp_sigma: 12.0
+  views:
+    - head
+    - left_wrist
+    - right_wrist
+  world_views:
+    - head
+  view_keys:
+    head: "observation.images.cam_high"
+    left_wrist: "observation.images.cam_left_wrist"
+    right_wrist: "observation.images.cam_right_wrist"
+  horizon: 32
+  end_padding: "repeat_last_frame_supervised"
+  lila_cleaning:
+    enabled: false
+    variant: "all-frames"
+
+model:
+  rynnbrain:
+    model_id: "${RESWAM_RYNNBRAIN_PATH:-Alibaba-DAMO-Academy/RynnBrain1.1-2B}"
+    revision: "36069aa841fc58f500d307316cbfdf379777ce8a"
+    text_layers: 16
+    vision_layers: 24
+    hidden_size: 2048
+    prompt_style: "multi_camera"
+  dino:
+    model_id: "${RESWAM_DINOV3_PATH:-facebook/dinov3-vitb16-pretrain-lvd1689m}"
+    revision: "5931719e67bbdb9737e363e781fb0c67687896bc"
+    selected_blocks: [8, 10]
+    image_size: 256
+    spatial_pooling: 2
+    tokens_per_view: 64
+    hidden_dim: 768
+    frozen: true
+  expert:
+    hidden_dim: 1024
+    heads: 16
+    ffn_dim: 4096
+    depth: 12
+    variant: "bidirectional"
+    layout: "robotwin"
+    use_state_null_tokens: false
+  flow:
+    world_loss_weight: 0.1
+    action_tau_shift: 1.0
+    world_tau_shift: 5.0
+    solver_steps: 10
+
+training:
+  output_dir: "${RESWAM_OUTPUT_DIR:-./outputs}/robodojo"
+  seed: 20260907
+  global_batch_size: 256
+  per_gpu_batch: 32
+  grad_accum: 2
+  world_size: 4
+  lr_schedule: "warmup_cosine"
+  steps: 200000
+  warmup_steps: 1500
+  save_every: 2000
+  save_full: true
+  keep_resume_states: 5
+  num_workers: 8
+  clip_grad_norm: 1.0
+  optimizer:
+    vlm_peak_lr: 1.0e-5
+    vlm_min_lr: 1.0e-6
+    expert_peak_lr: 1.0e-4
+    expert_min_lr: 1.0e-5
+    betas: [0.9, 0.95]
+    weight_decay: 1.0e-8
+
+evaluation:
+  robodojo_root: "${ROBODOJO_ROOT:-./third_party/RoboDojo}"
+  env_cfg: "arx_x5"
+  action_type: "joint"
+  num_tasks: 42
+  num_configs: 54
+  total_episodes: 2100
+  prediction_horizon: 32
+  execute_horizon: 10
+  protocol: "p32e10"
+  eval_seed: 0
+  capability_dimensions:
+    generalization:
+      - stack_bowls
+      - push_T
+      - pack_objects_into_box
+      - fold_clothes
+      - hang_mugs
+      - sweep_blocks
+      - pour_liquid_into_cup
+      - make_toast
+      - arrange_largest_number
+      - sort_nesting_dolls_by_size
+      - store_laptop_and_headphones
+      - stack_blocks
+    memory:
+      - cover_blocks
+      - match_and_pick_from_conveyor
+      - swap_blocks
+      - swap_T
+      - press_by_number
+      - imitate_sorting_sequence
+    precision:
+      - fasten_screws
+      - plug_in_charger
+      - insert_tubes
+      - pour_balls_into_vase
+      - play_Xylophone
+      - deposit_coin
+      - insert_key
+      - build_tower
+    long-horizon:
+      - fill_pen_holder
+      - classify_objects
+      - put_bottles_into_dustbin
+      - play_tic_tac_toe
+      - fill_egg_holder
+      - organize_table
+      - make_kong
+      - play_stacking_toy
+    open:
+      - align_blocks
+      - general_pickup
+      - solve_equation
+      - stack_blocks_by_language
+      - classify_objects_by_language
+      - pick_from_conveyor_by_image
+      - store_tools_in_toolbox
+      - pour_by_language

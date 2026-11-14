@@ -1,0 +1,13 @@
+# RoboDojo stage 2: continue from the stage-1 step-200000 resume state (model, optimizer,
+# RNG and data position) for 200k more updates at a constant LR equal to the cosine floor
+# (VLM 1e-6, expert 1e-5), checkpointing every 16k updates (216k, 232k, ..., 392k, 400k).
+base: robodojo.yaml
+
+training:
+  output_dir: "${RESWAM_OUTPUT_DIR:-./outputs}/robodojo_stage2"
+  init_from: "${RESWAM_OUTPUT_DIR:-./outputs}/robodojo"
+  lr_schedule: "constant_floor"
+  start_step: 200000
+  steps: 400000
+  save_every: 16000
+  keep_resume_states: 3

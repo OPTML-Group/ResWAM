@@ -1,0 +1,28 @@
+# Core training and inference dependencies for ResWAM (versions of the official runs:
+# Python 3.10, PyTorch 2.6.0 + CUDA 12.4). Training kernels: see requirements-train.txt.
+torch==2.6.0
+torchvision==0.21.0
+transformers==5.2.0
+tokenizers==0.22.2
+accelerate==1.13.0
+safetensors==0.7.0
+huggingface_hub>=1.0.0
+numpy==1.26.4
+scipy==1.15.3
+pyarrow>=18.0.0
+pandas>=2.2.0
+av==12.3.0
+Pillow>=11.0.0
+PyYAML>=6.0.2
+omegaconf>=2.3.0
+einops==0.8.1
+timm>=1.0.15
+tqdm>=4.67.0
+msgpack>=1.1.0
+websockets>=14.0
+websocket-client>=1.8.0
+imageio>=2.36.0
+opencv-python-headless>=4.10.0
+wandb>=0.19.0
+pytest>=8.3.0
+ruff>=0.8.0
