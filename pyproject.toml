@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reswam"
+version = "1.0.0"
+description = "ResWAM: Residual World Action Model for Visuomotor Control"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "ResWAM Authors"}
+]
+# Exact versions of the official runs are pinned in requirements.txt.
+dependencies = [
+    "torch>=2.6.0",
+    "torchvision>=0.21.0",
+    "transformers==5.2.0",
+    "tokenizers==0.22.2",
+    "accelerate>=1.13.0",
+    "safetensors>=0.7.0",
+    "huggingface_hub>=1.0.0",
+    "numpy>=1.26.0,<2.0.0",
+    "scipy>=1.15.0",
+    "pyarrow>=18.0.0",
+    "pandas>=2.2.0",
+    "av>=12.0.0",
+    "Pillow>=11.0.0",
+    "PyYAML>=6.0.2",
+    "omegaconf>=2.3.0",
+    "einops>=0.8.0",
+    "timm>=1.0.15",
+    "tqdm>=4.67.0",
+    "msgpack>=1.1.0",
+    "websockets>=14.0",
+    "websocket-client>=1.8.0",
+    "imageio>=2.36.0",
+    "opencv-python-headless>=4.10.0",
+    "wandb>=0.19.0",
+]
+
+[project.optional-dependencies]
+train = [
+    "flash-linear-attention==0.4.2",
+    "fla-core==0.4.2",
+    "causal-conv1d==1.5.0.post8",
+]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+]
+
+[project.scripts]
+reswam-train = "reswam.engine.trainer:main"
+reswam-extract-dino = "scripts.data_prep.extract_dinov3_cache:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["reswam*", "scripts*"]

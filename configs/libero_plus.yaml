@@ -1,0 +1,127 @@
+# Standard configuration for LIBERO training and LIBERO-Plus zero-shot evaluation
+benchmark: libero_plus
+dataset_id: libero
+
+data:
+  dataset_root: "${RESWAM_DATA_ROOT:-./data}/libero"
+  prepared_dir: "${RESWAM_DATA_ROOT:-./data}/prepared/libero"
+  dino_cache_root: "${RESWAM_CACHE_ROOT:-./cache}/dino/libero"
+  use_dino_cache: false
+  hf_repo: "physical-intelligence/libero"
+  hf_revision: "a4336d589d589045d1c56423ffdf3b88a0e19b1f"
+  episodes: 1693
+  frames: 273465
+  fps: 20
+  action_dim: 7
+  state_dim: 11
+  raw_state_dim: 8
+  state_featurization: "xyz_rot6d_fingers2_11d"
+  state_dropout_prob: 0.3
+  encode_clamp_sigma: 12.0
+  state_clamp_sigma: 10.0
+  action_space: "eef_delta"
+  gripper_indices: [6]
+  gripper_mode: "binary_pm1"
+  pi05_aug: false
+  views:
+    - head
+    - left_wrist
+  world_views:
+    - head
+  view_keys:
+    head: "observation.images.image"
+    left_wrist: "observation.images.wrist_image"
+  horizon: 8
+  end_padding: "zero_delta_hold_gripper_supervised"
+
+model:
+  rynnbrain:
+    model_id: "${RESWAM_RYNNBRAIN_PATH:-Alibaba-DAMO-Academy/RynnBrain1.1-2B}"
+    revision: "36069aa841fc58f500d307316cbfdf379777ce8a"
+    text_layers: 16
+    vision_layers: 24
+    hidden_size: 2048
+    prompt_style: "libero_cot"
+  dino:
+    model_id: "${RESWAM_DINOV3_PATH:-facebook/dinov3-vitb16-pretrain-lvd1689m}"
+    revision: "5931719e67bbdb9737e363e781fb0c67687896bc"
+    selected_blocks: [8, 10]
+    image_size: 256
+    spatial_pooling: 2
+    tokens_per_view: 64
+    hidden_dim: 768
+    frozen: true
+  expert:
+    hidden_dim: 1024
+    heads: 16
+    ffn_dim: 4096
+    depth: 12
+    variant: "bidirectional"
+    layout: "libero"
+    use_state_null_tokens: true
+  flow:
+    world_loss_weight: 0.5
+    action_tau_shift: 1.0
+    world_tau_shift: 1.0
+    solver_steps: 10
+
+training:
+  output_dir: "${RESWAM_OUTPUT_DIR:-./outputs}/libero"
+  seed: 20260830
+  global_batch_size: 256
+  per_gpu_batch: 32
+  grad_accum: 4
+  world_size: 2
+  steps: 100000
+  warmup_steps: 1500
+  save_every: 2000
+  save_full: true
+  keep_resume_states: 5
+  num_workers: 8
+  clip_grad_norm: 1.0
+  optimizer:
+    vlm_peak_lr: 1.0e-5
+    vlm_min_lr: 1.0e-6
+    expert_peak_lr: 1.0e-4
+    expert_min_lr: 1.0e-5
+    betas: [0.9, 0.95]
+    weight_decay: 1.0e-8
+
+evaluation:
+  benchmark_variant: "libero_plus"
+  libero_plus_root: "${LIBERO_PLUS_ROOT:-./third_party/LIBERO-plus}"
+  suites:
+    - libero_spatial
+    - libero_object
+    - libero_goal
+    - libero_10
+  expected_episodes_per_suite:
+    libero_spatial: 2402
+    libero_object: 2518
+    libero_goal: 2591
+    libero_10: 2519
+  total_episodes: 10030
+  trials_per_task: 1
+  prediction_horizon: 8
+  execute_horizon: 8
+  replan_interval: 8
+  num_steps_wait: 10
+  seed: 0
+  official_max_steps:
+    libero_spatial: 220
+    libero_object: 280
+    libero_goal: 300
+    libero_10: 520
+  executed_max_steps:
+    libero_spatial: 250
+    libero_object: 300
+    libero_goal: 320
+    libero_10: 550
+  perturbation_dimensions:
+    - "Camera Viewpoints"
+    - "Robot Initial States"
+    - "Language Instructions"
+    - "Light Conditions"
+    - "Background Textures"
+    - "Sensor Noise"
+    - "Objects Layout"
