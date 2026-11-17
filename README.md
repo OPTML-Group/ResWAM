@@ -3,7 +3,7 @@
 # ResWAM: Learning What Changes, Not What Stays, for World-Action Models
 
 <p align="center">
-  <a href="#"><img src="https://img.shields.io/badge/Paper-PDF-B31B1B" alt="Paper" /></a>
+  <a href="https://arxiv.org/abs/2611.19559"><img src="https://img.shields.io/badge/arXiv-2611.19559-B31B1B" alt="Paper" /></a>
   <a href="https://chongyu-fan.netlify.app/posts/reswam/"><img src="https://img.shields.io/badge/Project_Page-Link-green" alt="Project Page" /></a>
   <a href="https://github.com/OPTML-Group/ResWAM"><img src="https://img.shields.io/badge/Code-GitHub-181717?logo=github" alt="Code" /></a>
   <a href="https://huggingface.co/collections/OPTML-Group/reswam-6af8906dc9b6f21539b30934"><img src="https://img.shields.io/badge/Models-Hugging_Face-yellow" alt="Models" /></a>
@@ -30,7 +30,7 @@
 
 <hr />
 
-This is the official code repository for the paper **"ResWAM: Learning What Changes, Not What Stays, for World-Action Models"**, which introduces **ResWAM** (Residual World-Action Model), a residual world-action model with 2.3B parameters in total, including a lightweight 0.5B dual-branch DiT that learns visual token residuals in a frozen DINOv3 space alongside action chunks via conditional flow matching. See the [project page](https://chongyu-fan.netlify.app/posts/reswam/) and the [Hugging Face Collection](https://huggingface.co/collections/OPTML-Group/reswam-6af8906dc9b6f21539b30934) for more.
+This is the official code repository for the paper [**"ResWAM: Learning What Changes, Not What Stays, for World-Action Models"**](https://arxiv.org/abs/2611.19559), which introduces **ResWAM** (Residual World-Action Model), a residual world-action model with 2.3B parameters in total, including a lightweight 0.5B dual-branch DiT that learns visual token residuals in a frozen DINOv3 space alongside action chunks via conditional flow matching. See the [project page](https://chongyu-fan.netlify.app/posts/reswam/) and the [Hugging Face Collection](https://huggingface.co/collections/OPTML-Group/reswam-6af8906dc9b6f21539b30934) for more.
 
 <p align="center">
   <img src="assets/teaser.png" width="100%" alt="ResWAM Overview" />
@@ -216,7 +216,7 @@ If you find this work useful, please consider citing:
 @article{fan2026reswam,
   title={ResWAM: Learning What Changes, Not What Stays, for World-Action Models},
   author={Fan, Chongyu and Liu, Gaowen and Kompella, Ramana Rao and Corso, Jason and Liu, Sijia},
-  journal={arXiv preprint},
+  journal={arXiv preprint arXiv:2611.19559},
   year={2026}
 }
 ```
